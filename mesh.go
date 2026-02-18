@@ -12,8 +12,11 @@
 package mcpmesh
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"io"
+	"net/http"
 	"sync"
 	"time"
 
@@ -169,28 +172,92 @@ func (m *Mesh) DiscoverAgents(ctx context.Context, capability string) ([]AgentIn
 	return m.registry.FindByCapability(capability), nil
 }
 
-// Execute runs a capability on the best available agent
+// Execute runs a capability on the best available agent via HTTP POST.
+// Implements retry with circuit breaker logic.
 func (m *Mesh) Execute(ctx context.Context, req ExecutionRequest) (*ExecutionResult, error) {
 	if req.RequestID == "" {
 		req.RequestID = uuid.New().String()
 	}
 
-	agent, err := m.router.Route(req)
-	if err != nil {
-		return nil, fmt.Errorf("route request: %w", err)
+	timeout := req.Timeout
+	if timeout == 0 {
+		timeout = 30 * time.Second
 	}
 
-	start := time.Now()
-	// In production, this would invoke the agent's gRPC endpoint
-	result := &ExecutionResult{
-		RequestID: req.RequestID,
-		AgentID:   agent.ID,
-		Output:    []byte(fmt.Sprintf("executed by %s", agent.Name)),
-		Duration:  time.Since(start),
-		Success:   true,
+	maxRetries := m.config.MaxRetries
+	if maxRetries <= 0 {
+		maxRetries = 1
 	}
 
-	return result, nil
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		agent, err := m.router.Route(req)
+		if err != nil {
+			return nil, fmt.Errorf("route request: %w", err)
+		}
+
+		// Check circuit breaker
+		if m.router.IsCircuitOpen(agent.ID) {
+			lastErr = fmt.Errorf("circuit breaker open for agent %s", agent.ID)
+			continue
+		}
+
+		start := time.Now()
+
+		reqCtx, cancel := context.WithTimeout(ctx, timeout)
+		httpReq, err := http.NewRequestWithContext(reqCtx, http.MethodPost, agent.Endpoint, bytes.NewReader(req.Input))
+		if err != nil {
+			cancel()
+			m.router.RecordFailure(agent.ID)
+			lastErr = fmt.Errorf("create request: %w", err)
+			continue
+		}
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("X-Request-ID", req.RequestID)
+		httpReq.Header.Set("X-Capability", req.Capability)
+
+		client := &http.Client{Timeout: timeout}
+		resp, err := client.Do(httpReq)
+		cancel()
+
+		if err != nil {
+			m.router.RecordFailure(agent.ID)
+			lastErr = fmt.Errorf("execute on %s: %w", agent.Name, err)
+			continue
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		if resp.StatusCode >= 500 {
+			m.router.RecordFailure(agent.ID)
+			lastErr = fmt.Errorf("agent %s returned %d: %s", agent.Name, resp.StatusCode, string(body))
+			continue
+		}
+
+		if resp.StatusCode >= 400 {
+			m.router.RecordSuccess(agent.ID)
+			return &ExecutionResult{
+				RequestID: req.RequestID,
+				AgentID:   agent.ID,
+				Output:    body,
+				Duration:  time.Since(start),
+				Success:   false,
+				Error:     fmt.Sprintf("agent returned %d", resp.StatusCode),
+			}, nil
+		}
+
+		m.router.RecordSuccess(agent.ID)
+		return &ExecutionResult{
+			RequestID: req.RequestID,
+			AgentID:   agent.ID,
+			Output:    body,
+			Duration:  time.Since(start),
+			Success:   true,
+		}, nil
+	}
+
+	return nil, fmt.Errorf("all %d attempts failed: %w", maxRetries, lastErr)
 }
 
 // Heartbeat updates an agent's last-seen timestamp
