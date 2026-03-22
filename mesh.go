@@ -34,15 +34,15 @@ type AgentCapability struct {
 
 // AgentInfo represents a registered agent in the mesh
 type AgentInfo struct {
-	ID           string            `json:"id"`
-	Name         string            `json:"name"`
-	Tier         int               `json:"tier"`
-	Capabilities []AgentCapability `json:"capabilities"`
-	Endpoint     string            `json:"endpoint"`
-	Status       AgentStatus       `json:"status"`
-	RegisteredAt time.Time         `json:"registered_at"`
-	LastHeartbeat time.Time        `json:"last_heartbeat"`
-	Metadata     map[string]string `json:"metadata"`
+	ID            string            `json:"id"`
+	Name          string            `json:"name"`
+	Tier          int               `json:"tier"`
+	Capabilities  []AgentCapability `json:"capabilities"`
+	Endpoint      string            `json:"endpoint"`
+	Status        AgentStatus       `json:"status"`
+	RegisteredAt  time.Time         `json:"registered_at"`
+	LastHeartbeat time.Time         `json:"last_heartbeat"`
+	Metadata      map[string]string `json:"metadata"`
 }
 
 // AgentStatus represents the health status of an agent
@@ -73,34 +73,34 @@ func (s AgentStatus) String() string {
 
 // ExecutionRequest represents a request to execute an agent capability
 type ExecutionRequest struct {
-	RequestID    string            `json:"request_id"`
-	Capability   string            `json:"capability"`
-	Input        []byte            `json:"input"`
-	Timeout      time.Duration     `json:"timeout"`
-	Priority     int               `json:"priority"`
-	Metadata     map[string]string `json:"metadata"`
-	PreferAgent  string            `json:"prefer_agent,omitempty"`
+	RequestID   string            `json:"request_id"`
+	Capability  string            `json:"capability"`
+	Input       []byte            `json:"input"`
+	Timeout     time.Duration     `json:"timeout"`
+	Priority    int               `json:"priority"`
+	Metadata    map[string]string `json:"metadata"`
+	PreferAgent string            `json:"prefer_agent,omitempty"`
 }
 
 // ExecutionResult represents the result of an agent execution
 type ExecutionResult struct {
-	RequestID  string        `json:"request_id"`
-	AgentID    string        `json:"agent_id"`
-	Output     []byte        `json:"output"`
-	Duration   time.Duration `json:"duration"`
-	Success    bool          `json:"success"`
-	Error      string        `json:"error,omitempty"`
+	RequestID string        `json:"request_id"`
+	AgentID   string        `json:"agent_id"`
+	Output    []byte        `json:"output"`
+	Duration  time.Duration `json:"duration"`
+	Success   bool          `json:"success"`
+	Error     string        `json:"error,omitempty"`
 }
 
 // MeshConfig holds configuration for the MCP mesh
 type MeshConfig struct {
-	ListenAddr       string        `yaml:"listen_addr"`
-	RegistryBackend  string        `yaml:"registry_backend"` // "memory", "consul", "etcd"
-	HeartbeatInterval time.Duration `yaml:"heartbeat_interval"`
-	HealthTimeout    time.Duration `yaml:"health_timeout"`
-	MaxRetries       int           `yaml:"max_retries"`
-	CircuitBreaker   CircuitBreakerConfig `yaml:"circuit_breaker"`
-	RyzansteinURL    string        `yaml:"ryzanstein_url"`
+	ListenAddr        string               `yaml:"listen_addr"`
+	RegistryBackend   string               `yaml:"registry_backend"` // "memory", "consul", "etcd"
+	HeartbeatInterval time.Duration        `yaml:"heartbeat_interval"`
+	HealthTimeout     time.Duration        `yaml:"health_timeout"`
+	MaxRetries        int                  `yaml:"max_retries"`
+	CircuitBreaker    CircuitBreakerConfig `yaml:"circuit_breaker"`
+	RyzansteinURL     string               `yaml:"ryzanstein_url"`
 }
 
 // CircuitBreakerConfig configures the circuit breaker
@@ -129,10 +129,11 @@ func DefaultConfig() MeshConfig {
 
 // Mesh is the main orchestration mesh
 type Mesh struct {
-	config   MeshConfig
-	registry *Registry
-	router   *Router
-	mu       sync.RWMutex
+	config     MeshConfig
+	registry   *Registry
+	router     *Router
+	mu         sync.RWMutex
+	httpClient *http.Client // injectable for testing
 }
 
 // NewMesh creates a new MCP mesh instance
@@ -140,10 +141,27 @@ func NewMesh(config MeshConfig) *Mesh {
 	registry := NewRegistry()
 	router := NewRouter(registry)
 	return &Mesh{
-		config:   config,
-		registry: registry,
-		router:   router,
+		config:     config,
+		registry:   registry,
+		router:     router,
+		httpClient: &http.Client{},
 	}
+}
+
+// Heartbeat records a liveness ping from an agent, updating its LastHeartbeat
+// timestamp and resetting its status to Healthy if it was previously Degraded.
+func (m *Mesh) Heartbeat(ctx context.Context, agentID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	agent, ok := m.registry.Get(agentID)
+	if !ok {
+		return fmt.Errorf("heartbeat: agent %q not registered", agentID)
+	}
+	agent.LastHeartbeat = time.Now()
+	if agent.Status == StatusDegraded || agent.Status == StatusUnknown {
+		agent.Status = StatusHealthy
+	}
+	return m.registry.Register(agent) // overwrite with updated fields
 }
 
 // RegisterAgent registers a new agent with the mesh
@@ -216,8 +234,8 @@ func (m *Mesh) Execute(ctx context.Context, req ExecutionRequest) (*ExecutionRes
 		httpReq.Header.Set("X-Request-ID", req.RequestID)
 		httpReq.Header.Set("X-Capability", req.Capability)
 
-		client := &http.Client{Timeout: timeout}
-		resp, err := client.Do(httpReq)
+		m.httpClient.Timeout = timeout
+		resp, err := m.httpClient.Do(httpReq)
 		cancel()
 
 		if err != nil {

@@ -2,12 +2,27 @@ package mcpmesh
 
 import (
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// agentStub starts a minimal HTTP server that returns a successful execution
+// result and returns its URL for use as the agent Endpoint in tests.
+func agentStub(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]any{"ok": true, "output": "stub response"})
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
 
 func makeTestAgent(id, name string, tier int, caps ...string) AgentInfo {
 	capabilities := make([]AgentCapability, len(caps))
@@ -19,7 +34,7 @@ func makeTestAgent(id, name string, tier int, caps ...string) AgentInfo {
 		Name:         name,
 		Tier:         tier,
 		Capabilities: capabilities,
-		Endpoint:     "localhost:50052",
+		Endpoint:     "localhost:50052", // overridden in tests that need real HTTP
 		Status:       StatusHealthy,
 	}
 }
@@ -43,7 +58,10 @@ func TestMeshExecute(t *testing.T) {
 	mesh := NewMesh(DefaultConfig())
 	ctx := context.Background()
 
-	_, err := mesh.RegisterAgent(ctx, makeTestAgent("agent-1", "cipher", 1, "security_audit"))
+	agentURL := agentStub(t)
+	agent := makeTestAgent("agent-1", "cipher", 1, "security_audit")
+	agent.Endpoint = agentURL
+	_, err := mesh.RegisterAgent(ctx, agent)
 	require.NoError(t, err)
 
 	result, err := mesh.Execute(ctx, ExecutionRequest{

@@ -1,0 +1,139 @@
+syntax = "proto3";
+
+package mcpmesh.v1;
+
+option go_package = "github.com/iamthegreatdestroyer/ryzanstein/dependencies/mcp-mesh/proto/mcpmeshpb";
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EliteAgentMesh — gRPC service for the Elite Agent Collective orchestration
+// ─────────────────────────────────────────────────────────────────────────────
+
+service EliteAgentMesh {
+  // Register an agent with the mesh (idempotent).
+  rpc RegisterAgent(RegisterAgentRequest) returns (RegisterAgentResponse);
+
+  // Discover agents capable of handling a given capability.
+  rpc DiscoverAgents(DiscoverAgentsRequest) returns (DiscoverAgentsResponse);
+
+  // Execute a capability on the best available agent.
+  rpc ExecuteAgent(ExecuteAgentRequest) returns (ExecuteAgentResponse);
+
+  // Record a heartbeat from an agent, resetting its health status.
+  rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+
+  // Stream heartbeat pings — agents can keep a persistent connection alive.
+  rpc StreamHeartbeat(stream HeartbeatRequest) returns (stream HeartbeatResponse);
+
+  // List all currently registered agents and their health.
+  rpc ListAgents(ListAgentsRequest) returns (ListAgentsResponse);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Shared message types
+// ─────────────────────────────────────────────────────────────────────────────
+
+message AgentCapability {
+  string name        = 1;
+  string version     = 2;
+  string description = 3;
+  repeated string tags = 4;
+  map<string, string> metadata = 5;
+}
+
+enum AgentStatus {
+  AGENT_STATUS_UNSPECIFIED = 0;
+  AGENT_STATUS_HEALTHY     = 1;
+  AGENT_STATUS_DEGRADED    = 2;
+  AGENT_STATUS_UNHEALTHY   = 3;
+  AGENT_STATUS_DRAINING    = 4;
+}
+
+message AgentInfo {
+  string id                            = 1;
+  string name                          = 2;
+  int32  tier                          = 3;
+  repeated AgentCapability capabilities = 4;
+  string endpoint                      = 5;
+  AgentStatus status                   = 6;
+  int64 registered_at_unix             = 7;  // Unix timestamp (seconds)
+  int64 last_heartbeat_unix            = 8;
+  map<string, string> metadata         = 9;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RegisterAgent
+// ─────────────────────────────────────────────────────────────────────────────
+
+message RegisterAgentRequest {
+  AgentInfo agent = 1;
+}
+
+message RegisterAgentResponse {
+  string agent_id = 1;  // assigned by server if request.agent.id was empty
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// DiscoverAgents
+// ─────────────────────────────────────────────────────────────────────────────
+
+message DiscoverAgentsRequest {
+  string capability = 1;
+  // Optional: filter by minimum tier
+  int32 min_tier = 2;
+}
+
+message DiscoverAgentsResponse {
+  repeated AgentInfo agents = 1;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ExecuteAgent
+// ─────────────────────────────────────────────────────────────────────────────
+
+message ExecuteAgentRequest {
+  string request_id    = 1;
+  string capability    = 2;
+  bytes  input         = 3;
+  int64  timeout_ms    = 4;
+  int32  priority      = 5;
+  string prefer_agent  = 6;
+  map<string, string> metadata = 7;
+}
+
+message ExecuteAgentResponse {
+  string request_id    = 1;
+  string agent_id      = 2;
+  bytes  output        = 3;
+  int64  duration_ms   = 4;
+  bool   success       = 5;
+  string error         = 6;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Heartbeat
+// ─────────────────────────────────────────────────────────────────────────────
+
+message HeartbeatRequest {
+  string agent_id  = 1;
+  int64  timestamp = 2;  // client wall-clock (Unix ms) for latency measurement
+  AgentStatus status = 3;
+}
+
+message HeartbeatResponse {
+  bool   accepted       = 1;
+  string message        = 2;
+  int64  server_time    = 3;  // server wall-clock (Unix ms)
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ListAgents
+// ─────────────────────────────────────────────────────────────────────────────
+
+message ListAgentsRequest {
+  AgentStatus status_filter = 1;  // 0 = return all
+}
+
+message ListAgentsResponse {
+  repeated AgentInfo agents = 1;
+  int32 total               = 2;
+}
