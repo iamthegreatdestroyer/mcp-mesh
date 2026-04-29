@@ -148,21 +148,6 @@ func NewMesh(config MeshConfig) *Mesh {
 	}
 }
 
-// Heartbeat records a liveness ping from an agent, updating its LastHeartbeat
-// timestamp and resetting its status to Healthy if it was previously Degraded.
-func (m *Mesh) Heartbeat(ctx context.Context, agentID string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	agent, ok := m.registry.Get(agentID)
-	if !ok {
-		return fmt.Errorf("heartbeat: agent %q not registered", agentID)
-	}
-	agent.LastHeartbeat = time.Now()
-	if agent.Status == StatusDegraded || agent.Status == StatusUnknown {
-		agent.Status = StatusHealthy
-	}
-	return m.registry.Register(agent) // overwrite with updated fields
-}
 
 // RegisterAgent registers a new agent with the mesh
 func (m *Mesh) RegisterAgent(ctx context.Context, info AgentInfo) (string, error) {
