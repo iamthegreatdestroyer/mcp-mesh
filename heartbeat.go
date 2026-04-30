@@ -2,6 +2,7 @@ package mcpmesh
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -126,7 +127,7 @@ func (m *HeartbeatMonitor) sweep() {
 		m.logger.Warn("agent health degraded",
 			zap.String("agent_id", agent.ID),
 			zap.String("name", agent.Name),
-			zap.String("status", string(newStatus)),
+			zap.String("status", fmt.Sprint(newStatus)),
 			zap.Duration("silence", age.Round(time.Second)),
 		)
 	}
